@@ -44,14 +44,18 @@ Parameters:
     Type: String
     Description: 'Prefijo de recursos de la infraestructura base para referenciar en el microservicio.Pueden ser [dev,stg,prod o otro personalizado]'
     Default: 'dev1'
+  LogRetentionDays:
+    Type: Number
+    Description: "Indica el número de días de retención de logs."
+    Default: 30 
   
 Resources:
-  
+
   BatchUploadFileRolePolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       Description: "Policy used S3 for upload file lambda function"
-      ManagedPolicyName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-Policy-${AwsAccountIdToDeploy}"
+      ManagedPolicyName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-policy-${AwsAccountIdToDeploy}"
       Path: /
       PolicyDocument:
         Version: 2012-10-17
@@ -62,7 +66,7 @@ Resources:
               - "logs:CreateLogGroup"
               - "logs:CreateLogStream"
               - "logs:PutLogEvents"
-            Resource: !Sub "arn:aws:logs:${RegionToDeploy}:${AwsAccountIdToDeploy}:log-group:/aws/lambda/${EnvironmentId}-ddaccounts-batch-upload-file-function-${AwsAccountIdToDeploy}:*"
+            Resource: !Sub "arn:aws:logs:${RegionToDeploy}:${AwsAccountIdToDeploy}:log-group:/aws/lambda/${EnvironmentId}-ddaccounts-batch-upload-file:*"
           # Source S3 Bucket
           - Effect: Allow
             Action:
@@ -81,7 +85,7 @@ Resources:
     Type: AWS::IAM::Role
     DependsOn: BatchUploadFileRolePolicy 
     Properties:
-      RoleName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-fie-role-${AwsAccountIdToDeploy}"
+      RoleName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-role-${AwsAccountIdToDeploy}"
       Path: /
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -98,13 +102,19 @@ Resources:
         - Key: "PROCESSING_TYPE"
           Value: "BATCH"
 
+  BatchUploadFileFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${EnvironmentId}-ddaccounts-batch-upload-file
+      RetentionInDays: !Ref LogRetentionDays
+
   BatchUploadFileFunction:
     Type: AWS::Lambda::Function
     Properties:
       Runtime: python3.8
-      Handler: lambda_function.lambda_handler
+      Handler: index.lambda_handler
       Role: !GetAtt BatchUploadFileRole.Arn
-      FunctionName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-function-${AwsAccountIdToDeploy}"
+      FunctionName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file"
       Environment:
         Variables:
           ENVIRONMENT_ID: !Ref EnvironmentId
@@ -130,7 +140,6 @@ Resources:
              
               # Validate key is not Errors or Validated
               file_key = input_data["importFile"]["s3Key"]
-              print(f"Validate key is not Errors or Validated: {file_key}")
               if "/Errors/" in file_key or "/Validated/" in file_key:
                   print("El s3Key no cumple con los criterios para ejecutar el Step Function")
                   return {
@@ -206,20 +215,11 @@ Resources:
         !Sub
         |-
         {
-          "source": [
-            "aws.s3"
-          ],
-          "detail-type": [
-            "AWS API Call via CloudTrail"
-          ],
+          "source": ["aws.s3"],
+          "detail-type": ["AWS API Call via CloudTrail"],
           "detail": {
-            "eventSource": [
-              "s3.amazonaws.com"
-            ],
-            "eventName": [
-              "PutObject",
-              "CompleteMultipartUpload"
-            ],
+            "eventSource": ["s3.amazonaws.com"],
+            "eventName": ["PutObject","CompleteMultipartUpload"],
             "requestParameters": {
               "bucketName": [
                 "${EnvironmentId}-ddaccounts-${TenantId}-batch-inputfiledirectory-${AwsAccountIdToDeploy}"
