@@ -230,6 +230,7 @@ Resources:
         }  
       Name: !Sub ${EnvironmentId}-ddaccounts-rule-up_cre_deb_note
       State: 'ENABLED'
+      Id: Id3600
       Targets:
         - Arn: !Sub 'arn:aws:lambda:${RegionToDeploy}:${AwsAccountIdToDeploy}:function:${EnvironmentId}-ddaccounts-batch-upload-file'
           InputTransformer:
