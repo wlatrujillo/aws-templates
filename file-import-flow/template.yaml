@@ -1,0 +1,284 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  savings-service
+
+  SAM Template for savings-service
+
+Parameters:
+  RegionToDeploy:
+    Type: String
+    AllowedValues: [ us-east-2, us-west-2, us-east-1 ]
+    ConstraintDescription: must specify us-east-2 or us-west-2.
+    Description: Región en la cual se realizará el despliegue del ambiente de desarrollo.
+    Default: "us-east-1"
+  EnvironmentId:
+    Type: String
+    Description: "Identificador del ambiente."
+    Default: "dev1"
+  Module:
+    Type: String
+    Description: "Identificador del módulo."
+    Default: "ddaccounts"
+  AwsAccountIdToDeploy:
+    Type: String
+    Description: Identificador de la cuentas AWS donde se desplegará el API de desarrollo.
+    Default: "030608081964"
+  BatchFileUploadBucketPrefix:
+    Type: String
+    Description: "Prefix del bucket donde se subirán los archivos para procesamiento de ncnd."
+    Default: "satelites/"
+  TenantId:
+    Type: String
+    Description: 'Identificador del tenant.'
+    Default: 't1'
+  ModuleTagToLower:
+    Type: String
+    Description: Identificador del módulo de Cuentas de Ahorros.
+    Default: "ddaccounts"
+  BatchFileUploadKmsKeyId:
+    Type: String
+    Description: "KmsKeyId para encriptar los archivos subidos al bucket."
+    Default: "c3e3e3e3-3e3e-3e3e-3e3e-3e3e3e3e3e3e"
+  EnvironmentIdBase:
+    Type: String
+    Description: 'Prefijo de recursos de la infraestructura base para referenciar en el microservicio.Pueden ser [dev,stg,prod o otro personalizado]'
+    Default: 'dev1'
+  
+Resources:
+  
+  BatchUploadFileRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "Policy used S3 for upload file lambda function"
+      ManagedPolicyName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-Policy-${AwsAccountIdToDeploy}"
+      Path: /
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          # CloudWatch Logs
+          - Effect: Allow
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: !Sub "arn:aws:logs:${RegionToDeploy}:${AwsAccountIdToDeploy}:log-group:/aws/lambda/${EnvironmentId}-ddaccounts-batch-upload-file-function-${AwsAccountIdToDeploy}:*"
+          # Source S3 Bucket
+          - Effect: Allow
+            Action:
+              - "s3:GetObjectVersion"
+              - "s3:ListBucketVersions"
+            Resource:
+              - !Sub "arn:aws:s3:::${EnvironmentId}-ddaccounts-${TenantId}-batch-inputfiledirectory-${AwsAccountIdToDeploy}"
+              - !Sub "arn:aws:s3:::${EnvironmentId}-ddaccounts-${TenantId}-batch-inputfiledirectory-${AwsAccountIdToDeploy}/*"
+          - Effect: Allow
+            Action:
+              - "states:StartExecution"
+            Resource:
+              - !Sub "arn:aws:states:${RegionToDeploy}:${AwsAccountIdToDeploy}:stateMachine:${EnvironmentIdBase}-cobis-batch-file_import_flow"
+
+  BatchUploadFileRole:
+    Type: AWS::IAM::Role
+    DependsOn: BatchUploadFileRolePolicy 
+    Properties:
+      RoleName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-fie-role-${AwsAccountIdToDeploy}"
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com 
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Ref BatchUploadFileRolePolicy 
+      Tags:
+        - Key: "PROCESSING_TYPE"
+          Value: "BATCH"
+
+  BatchUploadFileFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.8
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt BatchUploadFileRole.Arn
+      FunctionName: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-function-${AwsAccountIdToDeploy}"
+      Environment:
+        Variables:
+          ENVIRONMENT_ID: !Ref EnvironmentId
+          PROCESSING_TYPE: "BATCH"
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import re
+
+          def lambda_handler(event, context):
+              print(f"start execution with event: {event}")
+              
+              # Initialize the Step Functions client
+              stepfunctions = boto3.client('stepfunctions')
+              
+              input_data = event
+
+              # Remove / if is present in input data for Step Function 
+              input_data["importFile"]["s3Key"] = input_data["importFile"]["s3Key"][1:] if input_data["importFile"]["s3Key"].startswith("/") else input_data["importFile"]["s3Key"]
+             
+             
+              # Validate key is not Errors or Validated
+              file_key = input_data["importFile"]["s3Key"]
+              print(f"Validate key is not Errors or Validated: {file_key}")
+              if "/Errors/" in file_key or "/Validated/" in file_key:
+                  print("El s3Key no cumple con los criterios para ejecutar el Step Function")
+                  return {
+                      "statusCode": 409,
+                      "body": json.dumps("El s3Key no cumple con los criterios para ejecutar el Step Function")
+                  }
+                  
+              # Validate duplicated file
+              bucket_name= event['inputfileDirectory'].split("s3://")[1]
+              s3_client = boto3.client('s3')
+              print(f"Validate duplicated with bucket: {bucket_name} file: {file_key}")
+
+              try:
+               
+                  s3_response = s3_client.list_object_versions(Bucket=bucket_name, Prefix=file_key)
+                  versions = s3_response.get('Versions', [])
+                  
+                  if len(versions) > 1:
+                      print(f"File already has more than one version: {file_key}")
+                      return {
+                          'statusCode': 409,
+                          'body': 'File already has more than one version'
+                      }
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 404,
+                      'body': 'File does not exists',
+                      'error':str(e)
+                  }
+              
+
+              # Specify the ARN of the Step Function
+              region = os.environ['AWS_REGION']
+              account_id = context.invoked_function_arn.split(":")[4]
+              environment_id = os.environ['ENVIRONMENT_ID']
+              state_machine_arn = f"arn:aws:states:{region}:{account_id}:stateMachine:{environment_id}-cobis-batch-file_import_flow"
+              
+              # Generate a unique execution name (e.g., timestamp or UUID)
+              execution_name = f"execution-{context.aws_request_id}"
+
+              try:
+             
+                  # Start execution of the Step Function
+                  print("Start execution of the Step Function")
+                  response = stepfunctions.start_execution(
+                      stateMachineArn=state_machine_arn,
+                      name=execution_name,
+                      input=json.dumps(input_data)
+                  )
+
+                  # Print the execution ARN
+                  print(f"Step Function execution started with ARN: {response['executionArn']}")
+
+                  # Return the execution ARN as part of Lambda response
+                  return {
+                      "statusCode": 200,
+                      "body": json.dumps(f"Step Function execution started with ARN: {response['executionArn']}")
+                  }
+              except Exception as e:
+                  print(f"Error invoking Step Function: {str(e)}")
+                  return {
+                      "statusCode": 500,
+                      "body": json.dumps(f"Error invoking Step Function: {str(e)}")
+                  }
+      Timeout: 60
+
+  UpCreDebNoteEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: 'Rule for upload up_cre_deb_note'
+      EventPattern:
+        !Sub
+        |-
+        {
+          "source": [
+            "aws.s3"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "s3.amazonaws.com"
+            ],
+            "eventName": [
+              "PutObject",
+              "CompleteMultipartUpload"
+            ],
+            "requestParameters": {
+              "bucketName": [
+                "${EnvironmentId}-ddaccounts-${TenantId}-batch-inputfiledirectory-${AwsAccountIdToDeploy}"
+              ],
+              "key" : [{"prefix" : "${BatchFileUploadBucketPrefix}"}]
+            }
+          }
+        }  
+      Name: !Sub ${EnvironmentId}-ddaccounts-rule-up_cre_deb_note
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Sub 'arn:aws:lambda:${RegionToDeploy}:${AwsAccountIdToDeploy}:function:${EnvironmentId}-ddaccounts-batch-upload-file-function-${AwsAccountIdToDeploy}'
+          Id: Id3600
+          InputTransformer:
+            InputPathsMap:
+              name: "$.detail.requestParameters.key"
+            InputTemplate:
+              !Sub
+              |-
+              {
+                "jobId": "ndnclog",
+                "moduleName": "${EnvironmentId}-ddaccounts",
+                "inputfileDirectory": "s3://${EnvironmentId}-ddaccounts-${TenantId}-batch-inputfiledirectory-${AwsAccountIdToDeploy}",
+                "importFile": {
+                  "s3Key": <name>,
+                  "truncateTable": false,
+                  "validationSchema":{
+                      "name": "${EnvironmentId}-${ModuleTagToLower}-${TenantId}-schemav6-up_cre_deb_note-${AwsAccountIdToDeploy}",
+                      "version":"1",
+                      "registry":"${EnvironmentId}-${ModuleTagToLower}-${TenantId}-SchemaRegistry-${AwsAccountIdToDeploy}",
+                      "source":"glue"
+                  },
+                  "autoScaling": "true",
+                  "numberOfWorkers": 20,
+                  "partitions": "1000",
+                  "database": "cob_remesas_his",
+                  "tableHeader":"re_ncnd_cabecera",
+                  "table": "re_notacre_deb",
+                  "useGlue": "False",
+                  "encryptedFile": false,
+                  "urlClientKey": "files/encrypted_key.key",
+                  "arnAsymKms" : "arn:aws:kms:${RegionToDeploy}:${AwsAccountIdToDeploy}:key/${BatchFileUploadKmsKeyId}",
+                  "fieldValuesToDefault": "{\"data\":{\"setDefault\":[{\"columName\":\"nd_orden\",\"value\":'',\"defaultValue\":None}]}}"
+                },
+                "environmentVariables": {
+                  "environmentId": "${EnvironmentId}",
+                  "tenantId": "${TenantId}"
+                }
+              }
+
+
+Outputs:
+  BatchUploadFileRoleArn:
+    Description: "ARN del rol para la función lambda de subida de archivos."
+    Value: !GetAtt BatchUploadFileRole.Arn
+    Export:
+      Name: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-role-arn-${AwsAccountIdToDeploy}"
+  BatchUploadFileFunctionArn:
+    Description: "ARN de la función lambda de subida de archivos."
+    Value: !GetAtt BatchUploadFileFunction.Arn
+    Export:
+      Name: !Sub "${EnvironmentId}-ddaccounts-batch-upload-file-function-arn-${AwsAccountIdToDeploy}"
