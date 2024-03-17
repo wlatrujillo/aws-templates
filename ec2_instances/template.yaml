@@ -64,8 +64,12 @@ Resources:
         SecurityGroupIngress: 
           - SourceSecurityGroupId: !Ref ALBSecurityGroup
             FromPort: 80
-            IpProtocol: "tcp"
+            IpProtocol: 'tcp'
             ToPort: 80
+          - FromPort: 22
+            IpProtocol: 'tcp'
+            ToPort: 22
+            CidrIp: '0.0.0.0/0'
     DependsOn: ALBSecurityGroup
 
 
@@ -80,12 +84,11 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
-          apt update -y
-          apt install -y httpd
-          systemctl start httpd
-          systemctl enable httpd
-          echo "<html><h1>Server Details</h1><p><strong>Hostname:</strong>
+          sudo apt update -y
+          sudo apt install -y apache2
+          sudo echo "<html><h1>Server Details</h1><p><strong>Hostname:</strong>
           $(hostname)</p><p><strong>Ip Address:</strong>$(hostname -I | cut -d" " -f1)</p></html>" > /var/www/html/index.html
+          sudo systemctl restart apache2
       Tags:
         - Key: Name
           Value: !Sub "${Environment}-ec2-instance-1"
@@ -103,12 +106,11 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
-          apt update -y
-          apt install -y httpd
-          systemctl start httpd
-          systemctl enable httpd
-          echo "<html><h1>Server Details</h1><p><strong>Hostname:</strong>
+          sudo apt update -y
+          sudo apt install -y apache2
+          sudo echo "<html><h1>Server Details</h1><p><strong>Hostname:</strong>
           $(hostname)</p><p><strong>Ip Address:</strong>$(hostname -I | cut -d" " -f1)</p></html>" > /var/www/html/index.html
+          sudo systemctl restart apache2
       Tags:
         - Key: Name
           Value: !Sub "${Environment}-ec2-instance-2"
@@ -138,6 +140,17 @@ Resources:
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 2
+      TargetType: instance
+      Targets:
+        - Id: !Ref EC2Instance1
+          Port: 80
+        - Id: !Ref EC2Instance2
+          Port: 80
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-target-group"
+        - Key: Group
+          Value: !Ref AWS::StackName
 
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
