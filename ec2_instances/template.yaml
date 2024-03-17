@@ -1,0 +1,161 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  ec2-instances is a sample application that creates an EC2 instance.
+  load-balancer is a sample application that creates an Application Load Balancer.
+
+Parameters:
+
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  Environment:
+    Description: Environment name
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - qa
+      - prod
+    ConstraintDescription: must specify dev, qa or prod.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select the VPC where you want to deploy your EC2 instance
+    Default: vpc-f104748c
+  SubnetIDs:
+    Type: CommaDelimitedList
+    Default: subnet-874d6fa6,subnet-dd577682,subnet-942f319a,subnet-c65773a0,subnet-69a7cf58,subnet-8f6a9ec3
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-080e1f13689e07408 
+    us-west-2:
+      AMI:  ami-08116b9957a259459
+
+Resources:
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${Environment}-alb-security-group"
+      GroupDescription: Enable HTTP access via port 80
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Group
+          Value: !Sub "${AWS::StackName}" 
+
+ 
+  EC2SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+        GroupDescription: "security group for EC2"
+        GroupName: !Sub "${Environment}-ec2-security-group" 
+        Tags: 
+          - Key: Group
+            Value: !Sub "${AWS::StackName}"
+        VpcId: !Ref VpcId
+        SecurityGroupIngress: 
+          - SourceSecurityGroupId: !Ref ALBSecurityGroup
+            FromPort: 80
+            IpProtocol: "tcp"
+            ToPort: 80
+    DependsOn: ALBSecurityGroup
+
+
+  EC2Instance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref KeyName
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: t2.micro
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          apt update -y
+          apt install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<html><h1>Server Details</h1><p><strong>Hostname:</strong>
+          $(hostname)</p><p><strong>Ip Address:</strong>$(hostname -I | cut -d" " -f1)</p></html>" > /var/www/html/index.html
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-ec2-instance-1"
+        - Key: Group
+          Value: !Ref AWS::StackName
+
+  EC2Instance2:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref KeyName
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: t2.micro
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          apt update -y
+          apt install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<html><h1>Server Details</h1><p><strong>Hostname:</strong>
+          $(hostname)</p><p><strong>Ip Address:</strong>$(hostname -I | cut -d" " -f1)</p></html>" > /var/www/html/index.html
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-ec2-instance-2"
+        - Key: Group
+          Value: !Ref AWS::StackName
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Name: !Sub "${Environment}-load-balancer"
+      Subnets: !Ref SubnetIDs
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Scheme: internet-facing
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${Environment}-target-group"
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /index.html
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+Outputs:
+
+  LoadBalancerDNSName:
+    Description: The DNS name of the load balancer
+    Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: !Sub "${Environment}-LoadBalancerDNSName"
+
+
+
