@@ -47,6 +47,10 @@ Resources:
           FromPort: '80'
           ToPort: '80'
           CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: '0.0.0.0/0'
       Tags:
         - Key: Group
           Value: !Sub "${AWS::StackName}" 
@@ -62,6 +66,10 @@ Resources:
             Value: !Sub "${AWS::StackName}"
         VpcId: !Ref VpcId
         SecurityGroupIngress: 
+          - SourceSecurityGroupId: !Ref ALBSecurityGroup
+            FromPort: 443
+            IpProtocol: 'tcp'
+            ToPort: 443
           - SourceSecurityGroupId: !Ref ALBSecurityGroup
             FromPort: 80
             IpProtocol: 'tcp'
@@ -117,7 +125,7 @@ Resources:
         - Key: Group
           Value: !Ref AWS::StackName
 
-  LoadBalancer:
+  ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Type: application
@@ -158,17 +166,31 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
-      LoadBalancerArn: !Ref LoadBalancer
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 80
       Protocol: HTTP
+
+  HTTPSlistener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    DependsOn: ApplicationLoadBalancer
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: '443'
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: >-
+            arn:aws:acm:<Region>:<AccountID>:certificate/89015ca3-cf23-4f8d-9d27-3d6bc9283d24
 
 Outputs:
 
   LoadBalancerDNSName:
     Description: The DNS name of the load balancer
-    Value: !GetAtt LoadBalancer.DNSName
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
     Export:
-      Name: !Sub "${Environment}-LoadBalancerDNSName"
+      Name: !Sub "${Environment}-ApplicationLoadBalancerDNSName"
 
 
 
