@@ -181,8 +181,7 @@ Resources:
       Port: '443'
       Protocol: HTTPS
       Certificates:
-        - CertificateArn: >-
-            arn:aws:acm:<Region>:<AccountID>:certificate/89015ca3-cf23-4f8d-9d27-3d6bc9283d24
+        - CertificateArn: !Sub "arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/89015ca3-cf23-4f8d-9d27-3d6bc9283d24"
 
 Outputs:
 
