@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Pfi Serverless APP
+
+  SAM Template for Pfi
+
+Parameters:
+  BucketEncryptionType:
+    Description: "Indica el tipo de algoritmo con el que se cifrarán todos los buckets creados por el microservicio"
+    Type: String
+    Default: 'AES256'
+  EnvironmentId:
+    Type: String
+    Description: 'Identificador del ambiente.'
+    Default: 'dev'
+  Module:
+    Type: String
+    Description: 'Identificador del módulo.'
+    Default: 'cam'
+  cachePolicyId:
+    Description: 'ID de la Política de Cache'
+    Default: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+    Type: String
+  originRequestPolicyId:
+    Description: 'ID de la Política de Peticiones al origen'
+    Default: '88a5eaf4-2fd4-4709-b370-b4c650ea3fcf'
+    Type: String
+  ResponseHeaderPolicyName:
+    Description: 'Nombre de la Política de Headers en la respuesta'
+    Default: '5cc3b908-e619-4b99-88e5-2cf7f45965bd'
+    Type: String
+
+Conditions:
+  EnableEncryptionBucketsWithKMS: !Equals [ !Ref BucketEncryptionType, "aws:kms" ]
+
+Resources:
+
+  KMSKey:
+    Type: 'AWS::KMS::Key'
+    Properties:
+      Description: 'Clave KMS para encriptar datos en S3 y CloudFront'
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: "Allow access through S3 for all principals in the account that are authorized to use S3"
+            Effect: "Allow"
+            Principal:
+              AWS: "*"
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub "s3.${AWS::Region}.amazonaws.com"
+                kms:CallerAccount: !Ref "AWS::AccountId"  
+          - Sid: "Allow access from CloudFront"
+            Effect: "Allow"
+            Principal:
+              AWS: "*"
+            Action:
+              - "kms:Decrypt"
+              - "kms:Encrypt"
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:ViaService: "cloudfront.amazonaws.com"
+                kms:CallerAccount: !Ref "AWS::AccountId" 
+          - Sid: "Allow direct access to key metadata to the account"
+            Effect: "Allow"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - "kms:Describe*"
+              - "kms:Get*"
+              - "kms:List*"
+              - "kms:PutKeyPolicy"
+              - "kms:UpdateAlias"
+              - "kms:DeleteAlias"
+            Resource: "*"
+
+  # Definición del Bucket S3
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      AccessControl: 'Private'
+      BucketName: !Sub ${EnvironmentId}-${Module}-mfe
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: !If [ EnableEncryptionBucketsWithKMS, true, !Ref "AWS::NoValue" ]
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !If [ EnableEncryptionBucketsWithKMS, !Ref KMSKey, !Ref "AWS::NoValue" ]
+              SSEAlgorithm: !If [ EnableEncryptionBucketsWithKMS, "aws:kms", "AES256" ]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: TRUE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: TRUE
+      Tags:
+        - Key: "ENVIRONMENT_ID"
+          Value: !Ref EnvironmentId
+        - Key: "MODULE"
+          Value: !Ref Module
+
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Join
+          - ''
+          - - 'origin-access-identity/cloudfront/'
+            - !GetAtt
+              - S3Bucket
+              - RegionalDomainName
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref S3Bucket
+                - /*
+            Principal:
+              AWS: !Join
+                - ' '
+                - - 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity'
+                  - !Ref CloudFrontOriginAccessIdentity
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub '${Module} Distribution'
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+        Enabled: true
+        HttpVersion: http2
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: !Ref cachePolicyId
+          Compress: true
+          OriginRequestPolicyId: !Ref originRequestPolicyId
+          ResponseHeadersPolicyId: !Ref ResponseHeaderPolicyName
+          SmoothStreaming: false
+          TargetOriginId: !Sub ${EnvironmentId}-${Module}-mfe-origin
+          ViewerProtocolPolicy: allow-all
+        IPV6Enabled: true
+        Origins:
+          - DomainName: !GetAtt
+              - S3Bucket
+              - RegionalDomainName
+            Id: !Sub ${EnvironmentId}-${Module}-mfe-origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Join
+                - ''
+                - - 'origin-access-identity/cloudfront/'
+                  - !Ref CloudFrontOriginAccessIdentity
+        DefaultRootObject: index.html
+#        Logging:
+#          IncludeCookies: 'true'
+#          Bucket: !Sub '${LoggingBucket}.s3.amazonaws.com'
+#          Prefix: !Sub '${Module}-cloudfront'
+        ViewerCertificate:
+          AcmCertificateArn: !Sub arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/52ccb8f9-3d4a-4a2b-9111-0985d5030f0a   
+          MinimumProtocolVersion: 'TLSv1.2_2021'
+          SslSupportMethod: 'sni-only'
+
+Outputs:
+
+  CloudFrontDomainName:
+    Description: "CloudFront Distribution Domain Name"
+    Value: !GetAtt CloudFrontDistribution.DomainName
