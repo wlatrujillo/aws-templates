@@ -43,33 +43,28 @@ Resources:
       KeyPolicy:
         Version: '2012-10-17'
         Statement:
-          - Sid: "Allow access through S3 for all principals in the account that are authorized to use S3"
+          - Sid: "AllowS3ToDecrypt"
             Effect: "Allow"
             Principal:
-              AWS: "*"
-            Action:
+              Service: "s3.amazonaws.com"
+            Action: 
               - "kms:Encrypt"
               - "kms:Decrypt"
-              - "kms:ReEncrypt*"
-              - "kms:GenerateDataKey*"
-              - "kms:DescribeKey"
             Resource: "*"
             Condition:
               StringEquals:
-                kms:ViaService: !Sub "s3.${AWS::Region}.amazonaws.com"
-                kms:CallerAccount: !Ref "AWS::AccountId"  
+                aws:SourceAccount: !Ref AWS::AccountId
           - Sid: "Allow access from CloudFront"
             Effect: "Allow"
             Principal:
-              AWS: "*"
-            Action:
-              - "kms:Decrypt"
+              Service: "cloudfront.amazonaws.com"
+            Action: 
               - "kms:Encrypt"
+              - "kms:Decrypt"
             Resource: "*"
             Condition:
               StringEquals:
-                kms:ViaService: "cloudfront.amazonaws.com"
-                kms:CallerAccount: !Ref "AWS::AccountId" 
+                aws:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
           - Sid: "Allow direct access to key metadata to the account"
             Effect: "Allow"
             Principal:
@@ -95,7 +90,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: !If [ EnableEncryptionBucketsWithKMS, true, !Ref "AWS::NoValue" ]
             ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !If [ EnableEncryptionBucketsWithKMS, !Ref KMSKey, !Ref "AWS::NoValue" ]
+              KMSMasterKeyID: !If [ EnableEncryptionBucketsWithKMS, !GetAtt KMSKey.Arn, !Ref "AWS::NoValue" ]
               SSEAlgorithm: !If [ EnableEncryptionBucketsWithKMS, "aws:kms", "AES256" ]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: TRUE
@@ -108,37 +103,15 @@ Resources:
         - Key: "MODULE"
           Value: !Ref Module
 
-  CloudFrontOriginAccessIdentity:
-    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+  CloudFrontOriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
     Properties:
-      CloudFrontOriginAccessIdentityConfig:
-        Comment: !Join
-          - ''
-          - - 'origin-access-identity/cloudfront/'
-            - !GetAtt
-              - S3Bucket
-              - RegionalDomainName
-
-  BucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref S3Bucket
-      PolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Action:
-              - 's3:GetObject'
-            Effect: Allow
-            Resource: !Join
-              - ''
-              - - 'arn:aws:s3:::'
-                - !Ref S3Bucket
-                - /*
-            Principal:
-              AWS: !Join
-                - ' '
-                - - 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity'
-                  - !Ref CloudFrontOriginAccessIdentity
+      OriginAccessControlConfig:
+        Description: !Sub ${EnvironmentId}-${Module}-oac
+        Name: !Sub ${EnvironmentId}-${Module}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -170,24 +143,37 @@ Resources:
           ViewerProtocolPolicy: allow-all
         IPV6Enabled: true
         Origins:
-          - DomainName: !GetAtt
-              - S3Bucket
-              - RegionalDomainName
+          - DomainName: !Sub ${EnvironmentId}-${Module}-mfe.s3.${AWS::Region}.amazonaws.com
             Id: !Sub ${EnvironmentId}-${Module}-mfe-origin
-            S3OriginConfig:
-              OriginAccessIdentity: !Join
-                - ''
-                - - 'origin-access-identity/cloudfront/'
-                  - !Ref CloudFrontOriginAccessIdentity
+            OriginAccessControlId: !Ref CloudFrontOriginAccess
+            S3OriginConfig: {}
         DefaultRootObject: index.html
-#        Logging:
-#          IncludeCookies: 'true'
-#          Bucket: !Sub '${LoggingBucket}.s3.amazonaws.com'
-#          Prefix: !Sub '${Module}-cloudfront'
         ViewerCertificate:
           AcmCertificateArn: !Sub arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/52ccb8f9-3d4a-4a2b-9111-0985d5030f0a   
           MinimumProtocolVersion: 'TLSv1.2_2021'
           SslSupportMethod: 'sni-only'
+          
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowCloudFrontAccess 
+            Action: 
+              - 's3:GetObject'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref S3Bucket
+                - /*
+            Principal:
+              Service: 'cloudfront.amazonaws.com'
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
 
 Outputs:
 
